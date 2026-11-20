@@ -53,7 +53,7 @@
 <div id="msg">Select Tora or Shillong, then scan the barcodes.</div>
 
 <div class="row">
-  <button id="clear">Clear</button>
+  <button id="clear">Next tablet</button>
   <button id="flash">Torch</button>
 </div>
 
@@ -62,7 +62,7 @@ const API_URL = 'https://script.google.com/macros/s/AKfycbzQoJl_rpUWWLOWt4zHaAfh
 const TARGETS = { Tora: 361, Shillong: 483 };
 
 let dest = localStorage.getItem('dest') || '';
-let imei = '', serial = '', busy = false, track = null;
+let imei = '', serial = '', rowId = null, busy = false, track = null;
 const $ = id => document.getElementById(id);
 
 function setMsg(t, cls) { $('msg').textContent = t; $('msg').className = cls || ''; }
@@ -78,29 +78,39 @@ function render() {
   $('sSerial').classList.toggle('done', !!serial);
   document.querySelectorAll('#dest button').forEach(b => b.classList.toggle('on', b.dataset.d === dest));
 }
-function reset() { imei = ''; serial = ''; render(); }
+function reset() { imei = ''; serial = ''; rowId = null; render(); }
 
 $('dest').onclick = e => {
   const b = e.target.closest('button'); if (!b) return;
   dest = b.dataset.d; localStorage.setItem('dest', dest);
   setMsg(dest + ' selected. Start scanning.'); render();
 };
-$('clear').onclick = () => { reset(); setMsg('Cleared.'); };
+$('clear').onclick = () => { reset(); setMsg('Ready for the next tablet.'); };
 $('flash').onclick = async () => {
   try { const on = !$('flash').dataset.on; await track.applyConstraints({ advanced: [{ torch: on }] }); $('flash').dataset.on = on ? '1' : ''; }
   catch { setMsg('Torch is not supported on this phone.', 'bad'); }
 };
 
-async function save() {
+async function save(prev) {
   busy = true; setMsg('Saving...');
   try {
-    const r = await fetch(API_URL, { method: 'POST', body: JSON.stringify({ destination: dest, imei, serial }) });
+    const r = await fetch(API_URL, { method: 'POST', body: JSON.stringify({ destination: dest, imei, serial, row: rowId }) });
     const j = await r.json();
     showCounts(j.counts);
-    if (j.ok) { navigator.vibrate && navigator.vibrate(120); setMsg('Saved to ' + dest + ' (IMEI ' + imei + ')', 'ok'); }
-    else { navigator.vibrate && navigator.vibrate([200, 100, 200]); setMsg(j.duplicate ? 'Already scanned: duplicate IMEI or serial.' : 'Could not save. Try again.', 'bad'); }
-  } catch (err) { setMsg('Network error: not saved. Check your internet and scan again.', 'bad'); }
-  reset();
+    if (j.ok) {
+      navigator.vibrate && navigator.vibrate(120);
+      rowId = j.row;
+      if (imei && serial) { setMsg('Saved to ' + dest + ' (IMEI ' + imei + ')', 'ok'); reset(); }
+      else setMsg('Saved to ' + dest + '. Scan the ' + (imei ? 'serial number' : 'IMEI') + ' barcode to complete this tablet, or tap Next tablet.', 'ok');
+    } else {
+      navigator.vibrate && navigator.vibrate([200, 100, 200]);
+      imei = prev.imei; serial = prev.serial; render();
+      setMsg(j.duplicate ? 'Already scanned: duplicate IMEI or serial.' : 'Could not save. Try again.', 'bad');
+    }
+  } catch (err) {
+    imei = prev.imei; serial = prev.serial; render();
+    setMsg('Network error: not saved. Check your internet and scan again.', 'bad');
+  }
   setTimeout(() => busy = false, 1500);
 }
 
@@ -108,11 +118,18 @@ function handle(raw) {
   if (busy) return;
   if (!dest) { setMsg('Select Tora or Shillong first.', 'bad'); return; }
   const v = raw.trim().replace(/\s+/g, '');
-  if (/^\d{15}$/.test(v)) { if (v === imei) return; imei = v; }
-  else { if (v === serial) return; serial = v; }
+  const prev = { imei, serial };
+  if (/^\d{15}$/.test(v)) {
+    if (v === imei) return;
+    if (imei) { setMsg('IMEI already captured. Tap Next tablet to start a new one.', 'bad'); return; }
+    imei = v;
+  } else {
+    if (v === serial) return;
+    if (serial) { setMsg('Serial already captured. Tap Next tablet to start a new one.', 'bad'); return; }
+    serial = v;
+  }
   render();
-  if (imei && serial) save();
-  else setMsg(imei ? 'IMEI captured. Now scan the serial number barcode.' : 'Serial captured. Now scan the IMEI barcode.');
+  save(prev);
 }
 
 async function start() {
